@@ -30,3 +30,7 @@
 *.exe
 *.out
 *.app
+
+# catkin workspace
+.catkin_workspace
+compile_commands.json
