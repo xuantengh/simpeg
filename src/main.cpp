@@ -15,6 +15,13 @@ int main(int argc, char **argv) {
         exit(1);
     }
     printf("input image size: (%d, %d, %d)\n", record.height, record.width, record.n_channels);
-    simpeg::write_jpeg(dst_file, record.data, 0, 0);
+    bool isRGB = record.n_channels == 3;
+    int n_bytes = simpeg::write_jpeg(dst_file, record.data, record.width, record.height, isRGB);
+    if (n_bytes != -1) {
+        printf("jpeg data has been successfully written into %s with %d bytes \n", dst_file, n_bytes);
+    } else {
+        fprintf(stderr, "failed...\n");
+        exit(1);
+    }
     return 0;
 }

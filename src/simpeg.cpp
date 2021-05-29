@@ -66,7 +66,7 @@ const int16_t kCodeWordLimit = 2048; // +/-2^11, maximum value after DCT
 
 struct BitCode {
     BitCode() = default;
-    BitCode(uint16_t code, uint8_t n_bits) : code(code), n_bits(n_bits) { }
+    BitCode(uint16_t code_, uint8_t n_bits_) : code(code_), n_bits(n_bits_) { }
     uint16_t code;  // true value
     uint8_t n_bits; // number of valid bits
 };
@@ -99,13 +99,13 @@ struct BitWriter {
                 call_back(0);
             }
         }
-        
+
         return *this;
     }
 
     // output all non-yet out bytes, fill gaps with 7 one bits
     void flush() {
-        *this << BitCode(0x7f, 7); 
+        *this << BitCode(0x7f, 7);
     }
 
     // output a single byte immediately, and bypass the buffer
@@ -135,9 +135,9 @@ struct BitWriter {
 // same as to np.clip
 template<typename Number, typename Limit>
 Number clip(Number value, Limit min, Limit max) {
-    Number ret = std::max(min, value);
-    ret = std::min(max, ret);
-    return ret;
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
 }
 
 // convert RGB pixel value to YCbCr, details are on https://en.wikipedia.org/wiki/YCbCr#JPEG_conversion
@@ -199,21 +199,23 @@ int16_t encode_block(BitWriter& writer, float block[8][8], const float scaled[8 
     for (int offset = 0; offset < 8; ++offset) {
         DCT(block64 + offset * 1, 8);
     }
+
     // scale
     for (int i = 0; i < 8 * 8; ++i) {
         block64[i] *= scaled[i];
     }
+
     // encode dc
-    int dc = std::nearbyint(block64[0]);
+    int dc = int(block64[0] + (block64[0] >= 0 ? +0.5f : -0.5f));
     // encode ac components
     int last_non_zero_pos = 0;
     int16_t quantized[8 * 8];
     for (int i = 1; i < 8 * 8; ++i) {
         // find value on the current position of zigzag sequence
         float value = block64[kZigZagInv[i]];
-        quantized[i] = std::nearbyint(value);
+        quantized[i] = int(value + (value >= 0 ? +0.5f : -0.5f));
         // update last_non_zero_pos
-        if (value != 0) {
+        if (quantized[i] != 0) {
             last_non_zero_pos = i;
         }
     }
@@ -250,7 +252,8 @@ int16_t encode_block(BitWriter& writer, float block[8][8], const float scaled[8 
     }
 
     return dc;
-}
+} 
+
 
 void generate_huffman_table(const uint8_t n_codes[16], const uint8_t *values, BitCode result[256]) {
     int huffman_code = 0;
@@ -289,36 +292,40 @@ bool read_jpeg(JpegData * record, const char * src_file, jpeg_error_mgr *jpeg_er
     record->n_channels = cinfo.num_components;
     record->data = new unsigned char[sizeof(unsigned char) * record->height * record->width * record->n_channels];
     // read RGB values row by row
-    unsigned char *currentRow = record->data;
+    unsigned char *current_row = record->data;
     const int row_stride = record->width * record->n_channels;
     for (int y = 0; y < record->height; ++y) {
-        jpeg_read_scanlines(&cinfo, &currentRow, 1);
-        currentRow += row_stride;
+        jpeg_read_scanlines(&cinfo, &current_row, 1);
+        current_row += row_stride;
     }
     // free resources
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
     fclose(fp);
-     
+
     return true;
 }
 
-bool write_jpeg(const char *dst_file, const unsigned char *image, unsigned int width, unsigned int height, 
-        bool isRBG, unsigned char output_quanlity) {
+int write_jpeg(const char *dst_file, const void *image, unsigned short width, unsigned short height,
+        bool isRGB, unsigned char output_quanlity) {
     // reject invalid arguments
     if (dst_file == nullptr || image == nullptr || width * height == 0) {
-        return false;
+        return -1;
     }
     // color or gray-scale image
-    const int n_components = isRBG == true ? 3 : 1;
+    const int n_components = isRGB == true ? 3 : 1;
 
     // create output binary stream
+    int writen_counter = 0;
     std::ofstream out_stream(dst_file, std::ios_base::out | std::ios_base::binary);
-    std::function<void(uint8_t)> byte_writer = [&out_stream](uint8_t c) { out_stream << c; };
+    std::function<void(uint8_t)> byte_writer = [&out_stream, &writen_counter](uint8_t c) {
+        out_stream << c; 
+        writen_counter++;
+    };
     ::BitWriter bit_writer(byte_writer);
 
     // JFIF headers
-    const uint8_t JFIF_header[2 + 2 + 16] = { 
+    const uint8_t JFIF_header[2 + 2 + 16] = {
         0xFF, 0xD8,             // SOI marker (start of image)
         0xFF, 0xE0,             // JFIF APP0 tag
         0, 16,                  // length: 16 bytes (14 bytes payload + 2 bytes for this length field)
@@ -345,13 +352,150 @@ bool write_jpeg(const char *dst_file, const unsigned char *image, unsigned int w
     }
 
     // write quantization table(s)
-    bit_writer.add_marker(0xdb, 2 + (isRBG ? 2 : 1) * (1 + 8 * 8));
+    bit_writer.add_marker(0xdb, 2 + (isRGB ? 2 : 1) * (1 + 8 * 8));
     bit_writer << 0x00 << luminance_quan_table;
-    if (isRBG == true) {
+    if (isRGB == true) {
         bit_writer << 0x01 << chrominance_quan_table;
     }
 
-    return true; 
+    // write image information, start of frame
+    bit_writer.add_marker(0xc0, 2 + 6 + 3 * n_components);  // 6 bytes for general, 3 bytes per channel
+
+    // 8 bits per channel
+    bit_writer << 0x08 << (height >> 8) << (height & 0xff) << (width >> 8) << (width & 0xff);
+
+    // sampling and quantization tables for each components
+    bit_writer << n_components;
+    for (uint8_t i = 1; i <= n_components; ++i) {
+        // component id, 0x11 for YCbCr 4:4:4, quantization table id
+        bit_writer << i << 0x11 << (i == 1 ? 0 : 1);
+    }
+
+    // Huffman table
+    bit_writer.add_marker(0xc4, isRGB ? (2 + 208 + 208) : (2 + 208));  // 208 = (1 + 16 + 12) + (1 + 16 + 162)
+    bit_writer << 0x00 << kDcLuminanceCodesPerBitsize << kDcLuminanceValues;
+    bit_writer << 0x10 << kAcLuminanceCodesPerBitsize << kAcLuminanceValues;
+
+    // Huffman code tables, luminance and chrominance if necessary
+    BitCode huffman_dc_luminance[256];
+    BitCode huffman_ac_luminance[256];
+    generate_huffman_table(kDcLuminanceCodesPerBitsize, kDcLuminanceValues, huffman_dc_luminance);
+    generate_huffman_table(kAcLuminanceCodesPerBitsize, kAcLuminanceValues, huffman_ac_luminance);
+
+    BitCode huffman_dc_chromimance[256];
+    BitCode huffman_ac_chromimance[256];
+    if (isRGB == true) {
+        bit_writer << 0x01 << kDcChrominanceCodesPerBitsize << kDcChrominanceValues;
+        bit_writer << 0x11 << kAcChrominanceCodesPerBitsize << kAcChrominanceValues;
+
+        generate_huffman_table(kDcChrominanceCodesPerBitsize, kDcChrominanceValues, huffman_dc_chromimance);
+        generate_huffman_table(kAcChrominanceCodesPerBitsize, kAcChrominanceValues, huffman_ac_chromimance);
+    }
+
+    // start of scan, 2 bytes for length field, 1 byte for number of components,
+    // 2 bytes for each component and 3 bytes for spectral selection
+    bit_writer.add_marker(0xda, 2 + 1 + 2 * n_components + 3);
+
+    bit_writer << n_components;
+    for (uint8_t i = 1; i <= n_components; ++i) {
+        // higher 4 bits: DC Huffman table, lower 4 bits: AC Huffman table
+        // Y: tables 0 for DC and AC, Cb & Cr: tables 1 for DC and AC
+        bit_writer << i << (i == 1 ? 0x00 : 0x11);
+    }
+
+    // standard for JPEG
+    static const uint8_t kSpectral[3] = {0, 63, 0};
+    bit_writer << kSpectral;
+
+    // AAN DCT scaling factors
+    // a[0] = 1, a[k] = cos(k * pi / 16) * sqrt(2)
+    static const float kAANScaleFactors[8] = {1, 1.387039845f, 1.306562965f, 1.175875602f, 1, 0.785694958f, 0.541196100f, 0.275899379f};
+    float scaled_luminance[8 * 8];
+    float scaled_chromimance[8 * 8];
+    for (int i = 0; i < 8 * 8; ++i) {
+        int row = kZigZagInv[i] / 8, col = kZigZagInv[i] % 8;
+
+        float factor = 1 / (kAANScaleFactors[row] * kAANScaleFactors[col] * 8);
+        scaled_luminance[kZigZagInv[i]] = factor / luminance_quan_table[i];
+        scaled_chromimance[kZigZagInv[i]] = factor / chrominance_quan_table[i];
+    }
+
+    // precompute JPEG codewords for quantized DCT
+    BitCode codewords_array[2 * kCodeWordLimit];
+    BitCode *codewords = codewords_array + kCodeWordLimit;
+    uint8_t n_bits = 1;
+    int32_t mask = 1;
+    for (uint16_t value = 1; value < kCodeWordLimit; ++value) {
+        // mask = (2 ^ n_bits) - 1
+        if (value > mask) {
+            n_bits++;
+            mask = (mask << 1) | 1;  // append one more 1
+        }
+
+        codewords[-value] = BitCode(mask - value, n_bits);
+        codewords[value] = BitCode(value, n_bits);
+    }
+
+    auto pixels = static_cast<const uint8_t *>(image);
+
+    const int max_height = height - 1, max_width = width - 1;
+    const int mcu_size = 8;
+
+    uint16_t last_Y_dc = 0, last_Cb_dc = 0, last_Cr_dc = 0;
+    // convert RGB to YCbCr
+    float Y[8][8], Cb[8][8], Cr[8][8];
+
+    // start encoding mcu blocks
+    for (int mcu_y = 0; mcu_y < height; mcu_y += mcu_size) {
+        for (int mcu_x = 0; mcu_x < width; mcu_x += mcu_size) {
+            for (int dy = 0; dy < 8; dy++) {
+                int col = std::min(mcu_x , width - 1); // must not exceed image borders, replicate last row/column if needed
+                int row = std::min(mcu_y + dy, height - 1);
+                for (auto dx = 0; dx < 8; dx++) {
+                    // find actual pixel position within the current image
+                    int pixel_pos = row * int(width) + col; // the cast ensures that we don't run into multiplication overflows
+                    if (col < width - 1) {
+                        col++;
+                    }
+
+                    // grayscale images have solely a Y channel which can be easily derived from the input pixel by shifting it by 128
+                    if (!isRGB) {
+                        Y[dy][dx] = pixels[pixel_pos] - 128.f;
+                        continue;
+                    }
+
+                    // RGB: 3 bytes per pixel (whereas grayscale images have only 1 byte per pixel)
+                    uint8_t r = pixels[3 * pixel_pos];
+                    uint8_t g = pixels[3 * pixel_pos + 1];
+                    uint8_t b = pixels[3 * pixel_pos + 2];
+
+                    Y[dy][dx] = rgb2Y(r, g, b) - 128.f;
+                    Cb[dy][dx] = rgb2Cb(r, g, b); // standard RGB-to-YCbCr conversion
+                    Cr[dy][dx] = rgb2Cr(r, g, b);
+                }
+            }
+
+            // encode Y channel
+            last_Y_dc = encode_block(bit_writer, Y, scaled_luminance, last_Y_dc, huffman_dc_luminance, huffman_ac_luminance, codewords);
+
+            // grayscale images don't need any Cb and Cr information
+            if (!isRGB) { 
+                continue;
+            }
+      
+            // encode Cb and Cr block
+            last_Cb_dc = encode_block(bit_writer, Cb, scaled_chromimance, last_Cb_dc, huffman_dc_chromimance, huffman_ac_chromimance, codewords);
+            last_Cr_dc = encode_block(bit_writer, Cr, scaled_chromimance, last_Cr_dc, huffman_dc_chromimance, huffman_ac_chromimance, codewords);
+        }
+    }
+
+    // output all bits in buffer
+    bit_writer.flush();
+
+    // end of image marker
+    bit_writer << 0xff << 0xd9;
+
+    return writen_counter;
 }
 
 };  // end of simpeg namespace

@@ -20,7 +20,7 @@ struct JpegData {
 };
 
 bool read_jpeg(JpegData *, const char *, jpeg_error_mgr *);
-bool write_jpeg(const char *dst_file, const unsigned char *image, unsigned int width, unsigned int height,
+int write_jpeg(const char *dst_file, const void *image, unsigned short width, unsigned short height,
         bool isRGB = true, unsigned char output_quality = 90);
 
 };  // namespace simpeg

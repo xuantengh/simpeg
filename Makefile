@@ -2,7 +2,7 @@ CXX = g++
 LDFLAGS = -ljpeg
 INC = -I./include
 
-all: header simpeg 
+all: header clean simpeg 
 
 header: include/simpeg.h
 
