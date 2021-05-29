@@ -19,7 +19,10 @@ struct JpegData {
     }
 };
 
+// read RGB or gray scale data from jpg file
 bool read_jpeg(JpegData *, const char *, jpeg_error_mgr *);
+
+// write RGB or gray scale data into JPEG format and store as a jpg file
 int write_jpeg(const char *dst_file, const void *image, unsigned short width, unsigned short height,
         bool isRGB = true, unsigned char output_quality = 90);
 

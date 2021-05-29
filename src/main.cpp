@@ -4,6 +4,7 @@
 #include <iostream>
 
 int main(int argc, char **argv) {
+    // receive and process command line options
     if (argc != 3 && argc != 4) {
         fprintf(stderr, "command format: ./simpeg input.jpg output.jpg (quality)\n");
         exit(1);
@@ -14,14 +15,15 @@ int main(int argc, char **argv) {
     if (argc == 4) {
         quality = static_cast<unsigned char>(atoi(argv[3]));
     }
-
+    // load jpg file
     simpeg::JpegData record;
     jpeg_error_mgr jpeg_error;
     if (!simpeg::read_jpeg(&record, src_file, &jpeg_error)) {
         exit(1);
     }
     printf("input image size: (%d, %d, %d)\n", record.height, record.width, record.n_channels);
-
+    printf("compress image with quality = %u\n", quality);
+    // write jpg file
     bool isRGB = record.n_channels == 3;
     int n_bytes = simpeg::write_jpeg(dst_file, record.data, record.width, record.height, isRGB, quality);
 
