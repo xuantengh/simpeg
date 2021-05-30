@@ -11,14 +11,14 @@ This repo does nothing expect for a decode-encode process of reading RGB data fr
 Require C++11.
 ```bash
 $ make
-$ ./simpeg input.jpg output.jpg 90
+$ ./simpeg demo/lena-color.jpg demo/lena-color-30.jpg 30
 ```
 
 ## Demo
 
-![origin](https://i.loli.net/2021/05/29/YfAZOFrgic4KGsN.jpg)![compressed](https://i.loli.net/2021/05/29/zatQOAi1ocYh5ZL.jpg)
+![origin](./demo/lena-color.jpg)![compressed](./demo/lena-color-30.jpg)
 
-The left one is the origin while the right is JPEG compressed image with quality equals to 30.
+The left one is the origin with 160KB size while the right is JPEG compressed image with quality equals to 30 and only 10KB size.
 
 ## References
 
